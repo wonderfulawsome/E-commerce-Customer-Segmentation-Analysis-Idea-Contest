@@ -41,23 +41,23 @@ def set_korean_font():
 set_korean_font()
 
 # -----------------------------------------------------------------------------
-# 2. 데이터 로드 및 전처리 (경로 자동 인식)
+# 2. 데이터 로드 및 전처리
 # -----------------------------------------------------------------------------
 @st.cache_data
 def load_and_process_data():
-    # app.py가 있는 위치를 기준으로 Data 폴더 경로를 잡습니다.
+    # 현재 파일(app.py)의 위치를 기준으로 Data 폴더 경로 설정
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, 'Data')
 
-    # 파일 읽기 (파일명이 실제 파일과 다르면 수정해주세요)
     try:
+        # 파일 읽기
         customer = pd.read_csv(os.path.join(data_dir, "Customer_info.csv"))
         discount = pd.read_csv(os.path.join(data_dir, "Discount_info.csv"))
         marketing = pd.read_csv(os.path.join(data_dir, "Marketing_info.csv"))
         onlinesales = pd.read_csv(os.path.join(data_dir, "Onlinesales_info.csv"))
         tax = pd.read_csv(os.path.join(data_dir, "Tax_info.csv"))
     except FileNotFoundError as e:
-        st.error(f"❌ 데이터 파일을 찾을 수 없습니다. 'Data' 폴더에 CSV 파일이 있는지 확인해주세요.\nError: {e}")
+        st.error(f"❌ 데이터 파일을 찾을 수 없습니다. 경로는 다음과 같아야 합니다: {data_dir}")
         st.stop()
 
     # --- 1. 데이터 병합 ---
