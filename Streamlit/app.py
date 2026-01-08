@@ -28,7 +28,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # -----------------------------------------------------------------------------
 @st.cache_data
 def load_and_process_data():
-    # 경로 설정 (app.py 위치 기준 Data 폴더)
+    # 경로 설정
     current_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(current_dir, 'Data')
 
@@ -136,7 +136,7 @@ def load_and_process_data():
 
     customer_df['segment'] = customer_df.apply(classify_customer_segment, axis=1)
     
-    # 그래프용 영문 세그먼트명 매핑
+    # 그래프용 영문 세그먼트명 매핑 (Matplotlib 깨짐 방지용)
     seg_map = {
         'VIP고객': 'VIP', '충성고객': 'Loyal', '잠재충성고객': 'Potential Loyal',
         '놓치면안될고객': "Can't Lose", '최근신규방문고객': 'New Customers',
@@ -188,9 +188,9 @@ st.sidebar.info(f"선택된 고객 수: {customer_df_filtered['고객ID'].nuniqu
 
 # --- Page 1: 개요 ---
 if menu == "1. 대시보드 개요":
-    st.title("📊 Dashboard Overview")
+    st.title("📊 대시보드 개요")
     
-    # KPI (한국어)
+    # KPI
     col1, col2, col3, col4 = st.columns(4)
     total_customers = customer_df_filtered['고객ID'].nunique()
     total_revenue = df_filtered['지불금액'].sum()
@@ -209,21 +209,21 @@ if menu == "1. 대시보드 개요":
     with col_chart1:
         st.subheader("월별 매출 추이")
         monthly = df_filtered.groupby('월')['지불금액'].sum().reset_index()
-        fig1 = px.line(monthly, x='월', y='지불금액', markers=True, title="Monthly Revenue")
+        fig1 = px.line(monthly, x='월', y='지불금액', markers=True, title="월별 매출 (Revenue)")
         st.plotly_chart(fig1, use_container_width=True)
 
     with col_chart2:
         st.subheader("지역별 고객 분포")
         region_cnt = df_filtered.groupby('고객지역')['고객ID'].nunique().reset_index()
-        fig2 = px.pie(region_cnt, values='고객ID', names='고객지역', hole=0.4, title="Customers by Region")
+        fig2 = px.pie(region_cnt, values='고객ID', names='고객지역', hole=0.4, title="지역별 고객 (Customers)")
         st.plotly_chart(fig2, use_container_width=True)
 
 # --- Page 2: RFM ---
 elif menu == "2. RFM 고객 세분화":
-    st.title("👥 RFM Segmentation")
+    st.title("👥 RFM 고객 세분화 분석")
     
-    # 세그먼트 분포
-    seg_counts = customer_df_filtered['segment_en'].value_counts().reset_index()
+    # 세그먼트 분포 (한국어 segment 사용)
+    seg_counts = customer_df_filtered['segment'].value_counts().reset_index()
     seg_counts.columns = ['Segment', 'Count']
     
     col1, col2 = st.columns(2)
@@ -238,13 +238,14 @@ elif menu == "2. RFM 고객 세분화":
 
     st.markdown("---")
     st.subheader("RFM 3D 분포")
+    # Plotly는 한글 잘 지원하므로 segment(한국어) 사용
     fig_3d = px.scatter_3d(customer_df_filtered, x='Recency', y='Frequency', z='Monetary',
-                           color='segment_en', opacity=0.7, size_max=10)
+                           color='segment', opacity=0.7, size_max=10)
     st.plotly_chart(fig_3d, use_container_width=True)
 
 # --- Page 3: 리텐션 & 코호트 ---
 elif menu == "3. 리텐션 & 코호트":
-    st.title("🔄 Retention & Cohort Analysis")
+    st.title("🔄 세그먼트별 리텐션(재구매율) 분석")
 
     def get_retention_matrix(data):
         if data.empty: return None
@@ -258,7 +259,7 @@ elif menu == "3. 리텐션 & 코호트":
     # UI 선택용 한글 리스트
     segments_list = ["전체 고객"] + sorted(df_filtered['segment'].unique().tolist())
     
-    # 그래프 제목용 영문 매핑
+    # 그래프 제목용 영문 매핑 (Matplotlib 폰트 깨짐 방지용)
     seg_eng_map = {
         "전체 고객": "All Customers", "VIP고객": "VIP", "충성고객": "Loyal",
         "잠재충성고객": "Potential Loyal", "놓치면안될고객": "Can't Lose",
@@ -283,7 +284,7 @@ elif menu == "3. 리텐션 & 코호트":
         fig, ax = plt.subplots(figsize=(12, 8))
         sns.heatmap(retention_matrix, annot=True, fmt='.0%', cmap='Blues', vmin=0, vmax=0.5, ax=ax)
         
-        # 영어 라벨 (깨짐 방지)
+        # ⚠️ 그래프 제목 및 축은 영어로 설정 (폰트 깨짐 방지)
         english_title = seg_eng_map.get(selected_seg, selected_seg)
         ax.set_title(f"{english_title} Cohort Analysis", fontsize=15)
         ax.set_ylabel("First Transaction Month", fontsize=12)
@@ -293,27 +294,26 @@ elif menu == "3. 리텐션 & 코호트":
     else:
         st.warning("데이터가 부족하여 그래프를 표시할 수 없습니다.")
 
-# --- Page 4: 연관 분석 (모든 세그먼트 추가 수정됨) ---
+# --- Page 4: 연관 분석 (한국어 세그먼트 선택으로 수정됨) ---
 elif menu == "4. 연관 분석":
-    st.title("🛒 Market Basket Analysis")
+    st.title("🛒 장바구니 연관 분석")
 
-    # 세그먼트 리스트 자동 생성 (전체 + 영문 세그먼트 목록)
-    # dropna()로 결측치 제거 후 정렬
-    unique_segments = sorted(df_filtered['segment_en'].dropna().unique().tolist())
-    options = ["All"] + unique_segments
+    # 세그먼트 리스트 자동 생성 (한국어 'segment' 컬럼 사용)
+    # 2개만 나오던 문제 해결 -> 전체 데이터에서 고유값 추출
+    unique_segments = sorted(df_filtered['segment'].dropna().unique().tolist())
+    options = ["전체"] + unique_segments
 
     # 드롭다운 메뉴
-    target_seg = st.selectbox("Target Segment", options)
-    min_sup = st.slider("Min Support", 0.005, 0.1, 0.01)
+    target_seg = st.selectbox("분석 대상 세그먼트", options)
+    min_sup = st.slider("최소 지지도 (Min Support)", 0.005, 0.1, 0.01)
 
-    if st.button("Run Analysis"):
-        with st.spinner("Apriori 알고리즘 실행 중..."):
-            # 세그먼트 필터링 로직 개선
-            if target_seg == "All":
+    if st.button("분석 실행"):
+        with st.spinner("연관 규칙 계산 중..."):
+            # 세그먼트 필터링
+            if target_seg == "전체":
                 data_sub = df_filtered[['고객ID', '제품카테고리']]
             else:
-                # 영문 세그먼트명(segment_en) 기준으로 바로 필터링
-                data_sub = df_filtered[df_filtered['segment_en'] == target_seg][['고객ID', '제품카테고리']]
+                data_sub = df_filtered[df_filtered['segment'] == target_seg][['고객ID', '제품카테고리']]
             
             # 리스트 변환 및 중복 제거
             dataset = [list(set(x)) for x in data_sub.groupby('고객ID')['제품카테고리'].apply(list).values.tolist()]
@@ -334,19 +334,20 @@ elif menu == "4. 연관 분석":
                 rules['antecedents'] = rules['antecedents'].apply(lambda x: ', '.join(list(x)))
                 rules['consequents'] = rules['consequents'].apply(lambda x: ', '.join(list(x)))
                 
-                st.subheader(f"Top 15 Association Rules ({target_seg})")
+                st.subheader(f"상위 연관 규칙 Top 15 ({target_seg})")
                 st.dataframe(rules[['antecedents', 'consequents', 'support', 'confidence', 'lift']])
                 
+                # Plotly는 한글 지원 -> 한국어 제목 사용
                 fig = px.scatter(rules, x="support", y="confidence", size="lift", color="lift",
-                                 title=f"Support vs Confidence ({target_seg})",
-                                 labels={'support': 'Support', 'confidence': 'Confidence', 'lift': 'Lift'})
+                                 title=f"지지도 vs 신뢰도 ({target_seg})",
+                                 labels={'support': '지지도 (Support)', 'confidence': '신뢰도 (Confidence)', 'lift': '향상도 (Lift)'})
                 st.plotly_chart(fig, use_container_width=True)
 
 # --- Page 5: 마케팅 전략 ---
 elif menu == "5. 마케팅 전략":
-    st.title("💡 Marketing Strategy")
+    st.title("💡 맞춤형 마케팅 전략 제안")
 
-    st.header("1. MLB Location Marketing")
+    st.header("1. 지역 기반 MLB 마케팅 (Headgear)")
     st.markdown("**전략:** 야구장이 있는 지역을 타겟으로 모자(Headgear) 프로모션 진행 (7~8월)")
     
     locations = {
@@ -374,5 +375,5 @@ elif menu == "5. 마케팅 전략":
     st.info("의류 구매 고객 중 약 26%가 바로 다음날 재구매를 합니다. (D+1 전략)")
     
     re_data = pd.DataFrame({'주기': ['당일', '익일(D+1)', '2~7일', '8일 이상'], '고객수': [739, 153, 20, 411]})
-    fig_bar = px.bar(re_data, x='주기', y='고객수', title="Apparel Repurchase Cycle", text='고객수')
+    fig_bar = px.bar(re_data, x='주기', y='고객수', title="의류 재구매 소요기간 분포", text='고객수')
     st.plotly_chart(fig_bar, use_container_width=True)
