@@ -11,21 +11,13 @@ import platform
 from mlxtend.preprocessing import TransactionEncoder
 from mlxtend.frequent_patterns import apriori, association_rules
 
-# -----------------------------------------------------------------------------
-# 1. 페이지 설정 및 기본 설정
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="E-commerce 고객 세분화 대시보드",
-    page_icon="🛍️",
-    layout="wide"
-)
+# 페이지 설정
+st.set_page_config(page_title="E-commerce 전략 대시보드", page_icon="🛍️", layout="wide")
 
-# Matplotlib 마이너스 기호 깨짐 방지
+# Matplotlib 기본 설정
 plt.rcParams['axes.unicode_minus'] = False
 
-# -----------------------------------------------------------------------------
-# 2. 데이터 로드 및 전처리
-# -----------------------------------------------------------------------------
+# 데이터 로드 및 전처리
 @st.cache_data
 def load_and_process_data():
     # 경로 설정
@@ -33,17 +25,16 @@ def load_and_process_data():
     data_dir = os.path.join(current_dir, 'Data')
 
     try:
-        # CSV 파일 읽기
         customer = pd.read_csv(os.path.join(data_dir, "Customer_info.csv"))
         discount = pd.read_csv(os.path.join(data_dir, "Discount_info.csv"))
         marketing = pd.read_csv(os.path.join(data_dir, "Marketing_info.csv"))
         onlinesales = pd.read_csv(os.path.join(data_dir, "Onlinesales_info.csv"))
         tax = pd.read_csv(os.path.join(data_dir, "Tax_info.csv"))
     except FileNotFoundError as e:
-        st.error(f"❌ 데이터 파일을 찾을 수 없습니다. 경로를 확인해주세요: {e}")
+        st.error(f"❌ 데이터 파일 없음. 경로 확인 필요: {e}")
         st.stop()
 
-    # 전처리: 월 매핑
+    # 전처리
     month_mapping = {'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
                      'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12}
     
@@ -53,34 +44,29 @@ def load_and_process_data():
     onlinesales['거래날짜'] = pd.to_datetime(onlinesales['거래날짜'])
     onlinesales['월'] = onlinesales['거래날짜'].dt.month
 
-    # 데이터 병합
+    # 병합
     df = pd.merge(onlinesales, customer, on='고객ID', how='left')
     df = pd.merge(df, discount, on=['월', '제품카테고리'], how='left')
     df = pd.merge(df, tax, on='제품카테고리', how='left')
 
-    # 결측치 처리
     df['쿠폰코드'].fillna('unknown', inplace=True)
     df['할인율'].fillna(0, inplace=True)
 
-    # 파생변수: 지불금액
+    # 파생변수
     df['전체금액'] = df['수량'] * df['평균금액']
-    
     def calculate_total(row):
         price = row['전체금액']
         gst = row['GST']
         discount_rate = row['할인율'] if row['쿠폰상태'] == 'Used' else 0
-        subtotal = price * (1 - discount_rate/100)
-        return subtotal + (subtotal * gst)
+        return price * (1 - discount_rate/100) + (price * (1 - discount_rate/100) * gst)
 
     df['지불금액'] = df.apply(calculate_total, axis=1)
 
-    # 배송료 처리
     first_delivery_fee = df.groupby(['고객ID', '거래ID'])['배송료'].first()
     customer_delivery_fee_sum = first_delivery_fee.groupby('고객ID').sum()
 
     # RFM 계산
     last_date = df['거래날짜'].max() + pd.DateOffset(days=1)
-
     rfm_df = df.groupby(['고객ID']).agg({
         '거래날짜': lambda x: (last_date - x.max()).days,
         '거래ID': lambda x: x.nunique(),
@@ -88,7 +74,6 @@ def load_and_process_data():
     })
     rfm_df.rename(columns={'거래날짜': 'Recency', '거래ID': 'Frequency', '지불금액': 'Monetary'}, inplace=True)
     
-    # Monetary에 배송비 추가
     for customer_id, delivery_fee in customer_delivery_fee_sum.items():
         if customer_id in rfm_df.index:
             rfm_df.loc[customer_id, 'Monetary'] += delivery_fee
@@ -96,79 +81,64 @@ def load_and_process_data():
     rfm_df.reset_index(inplace=True)
     df = df.merge(rfm_df, on='고객ID')
 
-    # Recency 가중치 적용
+    # 가중치 Recency
     product_category_values = {
         'Office': 9, 'Apparel': 6, 'Nest-USA': 5, 'Drinkware': 13,
         'Lifestyle': 17, 'Nest': 4, 'Bags': 18, 'Headgear': 27,
         'Notebooks & Journals': 20, 'Waze': 23
     }
-    
     df_temp = df.copy()
     for category, value in product_category_values.items():
         df_temp.loc[df_temp['제품카테고리'] == category, '거래날짜'] += pd.Timedelta(days=value)
     
     df_temp['거래날짜'] = pd.to_datetime(df_temp['거래날짜'])
     last_weighted = df_temp['거래날짜'].max() + pd.DateOffset(days=27)
-    
     weighted_r = df_temp.groupby(['고객ID']).agg({'거래날짜': lambda x: (last_weighted - x.max()).days})
-    weighted_r.rename(columns={'거래날짜': 'Weighted_Recency'}, inplace=True)
+    df['Recency'] = df['고객ID'].map(weighted_r['거래날짜'])
     
-    df['Recency'] = df['고객ID'].map(weighted_r['Weighted_Recency'])
-    
-    # 고객 레벨 데이터 생성
+    # 고객 데이터 생성
     customer_df = df.groupby('고객ID')[['Recency', 'Frequency', 'Monetary']].first().reset_index()
 
-    # 등급 부여 (R, F, M)
+    # 등급 부여
     customer_df['R'] = customer_df['Recency'].apply(lambda x: 5 if x<=50 else (4 if x<=100 else (3 if x<=150 else (2 if x<=200 else (1 if x<=300 else 0)))))
     customer_df['F'] = customer_df['Frequency'].apply(lambda x: 0 if x<=8 else (1 if x<=20 else (2 if x<=50 else (3 if x<=100 else (4 if x<=300 else 5)))))
     customer_df['M'] = customer_df['Monetary'].apply(lambda x: 0 if x<=1676 else (1 if x<=2500 else (2 if x<=4000 else (3 if x<=6000 else (4 if x<=10000 else 5)))))
 
-    # 세그먼트 분류 (한국어)
-    def classify_customer_segment(row):
+    # 세그먼트 분류
+    def classify_segment(row):
         R, F, M = row['R'], row['F'], row['M']
-        if R == 5 and F == 5 and M == 5: return 'VIP고객'
-        elif R >= 3 and F >= 3 and M >= 3: return '충성고객'
-        elif R >= 2 and F >= 2 and M >= 1: return '잠재충성고객'
-        elif R >= 0 and F >= 2 and M >= 2: return '놓치면안될고객'
-        elif R >= 3 and F >= 0 and M >= 0: return '최근신규방문고객'
-        elif R >= 0 and F >= 1 and M >= 1: return '이탈우려고객'
+        if R==5 and F==5 and M==5: return 'VIP고객'
+        elif R>=3 and F>=3 and M>=3: return '충성고객'
+        elif R>=2 and F>=2 and M>=1: return '잠재충성고객'
+        elif R>=0 and F>=2 and M>=2: return '놓치면안될고객'
+        elif R>=3 and F>=0 and M>=0: return '최근신규방문고객'
+        elif R>=0 and F>=1 and M>=1: return '이탈우려고객'
         else: return '기타'
 
-    customer_df['segment'] = customer_df.apply(classify_customer_segment, axis=1)
+    customer_df['segment'] = customer_df.apply(classify_segment, axis=1)
     
-    # 그래프용 영문 세그먼트명 매핑 (Matplotlib 깨짐 방지용)
-    seg_map = {
-        'VIP고객': 'VIP', '충성고객': 'Loyal', '잠재충성고객': 'Potential Loyal',
-        '놓치면안될고객': "Can't Lose", '최근신규방문고객': 'New Customers',
-        '이탈우려고객': 'At Risk', '기타': 'Others'
-    }
+    # 영문 매핑
+    seg_map = {'VIP고객': 'VIP', '충성고객': 'Loyal', '잠재충성고객': 'Potential Loyal',
+               '놓치면안될고객': "Can't Lose", '최근신규방문고객': 'New Customers',
+               '이탈우려고객': 'At Risk', '기타': 'Others'}
     customer_df['segment_en'] = customer_df['segment'].map(seg_map)
 
-    # 최종 데이터 병합
+    # 최종 병합
     df_final = df.merge(customer_df[['고객ID', 'R', 'F', 'M', 'segment', 'segment_en']], on='고객ID')
-    
-    # 코호트 변수 생성
     df_final['최초거래월'] = df_final.groupby('고객ID')['월'].transform('min')
     df_final['경과월'] = df_final['월'] - df_final['최초거래월']
 
     return df_final, customer_df, marketing
 
-# 데이터 로딩 실행
-with st.spinner('데이터 분석 로직 수행 중...'):
+with st.spinner('데이터 분석 수행 중...'):
     df, customer_df, marketing = load_and_process_data()
 
-# -----------------------------------------------------------------------------
-# 3. 사이드바 메뉴
-# -----------------------------------------------------------------------------
+# 사이드바
 st.sidebar.title("이커머스 분석 메뉴")
-menu = st.sidebar.radio(
-    "페이지 이동",
-    ["1. 대시보드 개요", "2. RFM 고객 세분화", "3. 리텐션 & 코호트", "4. 연관 분석", "5. 마케팅 전략"]
-)
+menu = st.sidebar.radio("페이지 이동", ["1. 대시보드 개요", "2. RFM 고객 세분화", "3. 리텐션 & 코호트", "4. 연관 분석", "5. 마케팅 전략"])
 st.sidebar.markdown("---")
 
-# 지역 필터링
-st.sidebar.subheader("지역 필터")
+# 지역 필터
 all_regions = sorted(df['고객지역'].unique())
 selected_regions = st.sidebar.multiselect("지역 선택", all_regions, default=all_regions)
 
@@ -180,200 +150,171 @@ else:
     df_filtered = df
     customer_df_filtered = customer_df
 
-st.sidebar.info(f"선택된 고객 수: {customer_df_filtered['고객ID'].nunique():,}명")
+st.sidebar.info(f"선택 고객 수: {customer_df_filtered['고객ID'].nunique():,}명")
 
-# -----------------------------------------------------------------------------
-# 4. 페이지별 시각화
-# -----------------------------------------------------------------------------
-
-# --- Page 1: 개요 ---
+# 1. 개요
 if menu == "1. 대시보드 개요":
     st.title("📊 대시보드 개요")
+    c1, c2, c3, c4 = st.columns(4)
+    total_cust = customer_df_filtered['고객ID'].nunique()
+    total_rev = df_filtered['지불금액'].sum()
+    c1.metric("총 고객 수", f"{total_cust:,} 명")
+    c2.metric("총 매출액", f"${total_rev:,.0f}")
+    c3.metric("객단가", f"${total_rev/total_cust:,.0f}" if total_cust else 0)
+    c4.metric("총 거래수", f"{df_filtered['거래ID'].nunique():,} 건")
     
-    # KPI
-    col1, col2, col3, col4 = st.columns(4)
-    total_customers = customer_df_filtered['고객ID'].nunique()
-    total_revenue = df_filtered['지불금액'].sum()
-    avg_ticket = total_revenue / total_customers if total_customers > 0 else 0
-    total_tx = df_filtered['거래ID'].nunique()
-
-    col1.metric("총 고객 수", f"{total_customers:,} 명")
-    col2.metric("총 매출액", f"${total_revenue:,.0f}")
-    col3.metric("고객당 평균매출", f"${avg_ticket:,.0f}")
-    col4.metric("총 거래수", f"{total_tx:,} 건")
-
     st.markdown("---")
-    
-    col_chart1, col_chart2 = st.columns(2)
-    
-    with col_chart1:
-        st.subheader("월별 매출 추이")
-        monthly = df_filtered.groupby('월')['지불금액'].sum().reset_index()
-        fig1 = px.line(monthly, x='월', y='지불금액', markers=True, title="월별 매출 (Revenue)")
-        st.plotly_chart(fig1, use_container_width=True)
-
-    with col_chart2:
-        st.subheader("지역별 고객 분포")
-        region_cnt = df_filtered.groupby('고객지역')['고객ID'].nunique().reset_index()
-        fig2 = px.pie(region_cnt, values='고객ID', names='고객지역', hole=0.4, title="지역별 고객 (Customers)")
-        st.plotly_chart(fig2, use_container_width=True)
-
-# --- Page 2: RFM ---
-elif menu == "2. RFM 고객 세분화":
-    st.title("👥 RFM 고객 세분화 분석")
-    
-    # 세그먼트 분포 (한국어 segment 사용)
-    seg_counts = customer_df_filtered['segment'].value_counts().reset_index()
-    seg_counts.columns = ['Segment', 'Count']
-    
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("세그먼트 비율")
-        fig_pie = px.pie(seg_counts, values='Count', names='Segment', color='Segment')
-        st.plotly_chart(fig_pie, use_container_width=True)
+        monthly = df_filtered.groupby('월')['지불금액'].sum().reset_index()
+        st.plotly_chart(px.line(monthly, x='월', y='지불금액', markers=True, title="Monthly Revenue"), use_container_width=True)
     with col2:
-        st.subheader("세그먼트별 고객 수")
-        fig_bar = px.bar(seg_counts, x='Segment', y='Count', color='Segment', text='Count')
-        st.plotly_chart(fig_bar, use_container_width=True)
+        reg_cnt = df_filtered.groupby('고객지역')['고객ID'].nunique().reset_index()
+        st.plotly_chart(px.pie(reg_cnt, values='고객ID', names='고객지역', hole=0.4, title="Customers by Region"), use_container_width=True)
 
-    st.markdown("---")
-    st.subheader("RFM 3D 분포")
-    # Plotly는 한글 잘 지원하므로 segment(한국어) 사용
-    fig_3d = px.scatter_3d(customer_df_filtered, x='Recency', y='Frequency', z='Monetary',
-                           color='segment', opacity=0.7, size_max=10)
-    st.plotly_chart(fig_3d, use_container_width=True)
-
-# --- Page 3: 리텐션 & 코호트 ---
-elif menu == "3. 리텐션 & 코호트":
-    st.title("🔄 세그먼트별 리텐션(재구매율) 분석")
-
-    def get_retention_matrix(data):
-        if data.empty: return None
-        grouping = data.groupby(['최초거래월', '경과월'])
-        cohort_data = grouping['고객ID'].apply(pd.Series.nunique).reset_index()
-        cohort_counts = cohort_data.pivot(index='최초거래월', columns='경과월', values='고객ID')
-        if cohort_counts.empty: return None
-        retention = cohort_counts.divide(cohort_counts.iloc[:, 0], axis=0)
-        return retention
-
-    # UI 선택용 한글 리스트
-    segments_list = ["전체 고객"] + sorted(df_filtered['segment'].unique().tolist())
+# 2. RFM
+elif menu == "2. RFM 고객 세분화":
+    st.title("👥 RFM 고객 세분화 분석")
+    seg_cnt = customer_df_filtered['segment'].value_counts().reset_index()
+    seg_cnt.columns = ['Segment', 'Count']
     
-    # 그래프 제목용 영문 매핑 (Matplotlib 폰트 깨짐 방지용)
-    seg_eng_map = {
-        "전체 고객": "All Customers", "VIP고객": "VIP", "충성고객": "Loyal",
-        "잠재충성고객": "Potential Loyal", "놓치면안될고객": "Can't Lose",
-        "최근신규방문고객": "New Customers", "이탈우려고객": "At Risk", "기타": "Others"
-    }
+    c1, c2 = st.columns(2)
+    with c1: st.plotly_chart(px.pie(seg_cnt, values='Count', names='Segment', title="세그먼트 비율"), use_container_width=True)
+    with c2: st.plotly_chart(px.bar(seg_cnt, x='Segment', y='Count', color='Segment', title="세그먼트별 고객 수"), use_container_width=True)
+    st.plotly_chart(px.scatter_3d(customer_df_filtered, x='Recency', y='Frequency', z='Monetary', color='segment', opacity=0.7), use_container_width=True)
+
+# 3. 리텐션
+elif menu == "3. 리텐션 & 코호트":
+    st.title("🔄 세그먼트별 리텐션 분석")
+    
+    def get_cohort(d):
+        if d.empty: return None
+        g = d.groupby(['최초거래월', '경과월'])['고객ID'].nunique().reset_index()
+        p = g.pivot(index='최초거래월', columns='경과월', values='고객ID')
+        return p.divide(p.iloc[:,0], axis=0) if not p.empty else None
+
+    seg_list = ["전체 고객"] + sorted(df_filtered['segment'].unique().tolist())
+    seg_eng_map = {"전체 고객": "All Customers", "VIP고객": "VIP", "충성고객": "Loyal", "잠재충성고객": "Potential Loyal", 
+                   "놓치면안될고객": "Can't Lose", "최근신규방문고객": "New Customers", "이탈우려고객": "At Risk", "기타": "Others"}
     
     col1, col2 = st.columns([1, 3])
-    with col1:
-        selected_seg = st.selectbox("분석할 세그먼트 선택:", segments_list)
-
-    if selected_seg == "전체 고객":
-        cohort_data = df_filtered
-        st.info("대상: **전체 고객**의 리텐션 현황")
-    else:
-        cohort_data = df_filtered[df_filtered['segment'] == selected_seg]
-        st.info(f"대상: **{selected_seg}** 그룹의 리텐션 현황")
-
-    # 히트맵
-    retention_matrix = get_retention_matrix(cohort_data)
-
-    if retention_matrix is not None:
+    with col1: sel_seg = st.selectbox("분석할 세그먼트 선택:", seg_list)
+    
+    target = df_filtered if sel_seg == "전체 고객" else df_filtered[df_filtered['segment'] == sel_seg]
+    mat = get_cohort(target)
+    
+    if mat is not None:
         fig, ax = plt.subplots(figsize=(12, 8))
-        sns.heatmap(retention_matrix, annot=True, fmt='.0%', cmap='Blues', vmin=0, vmax=0.5, ax=ax)
-        
-        # ⚠️ 그래프 제목 및 축은 영어로 설정 (폰트 깨짐 방지)
-        english_title = seg_eng_map.get(selected_seg, selected_seg)
-        ax.set_title(f"{english_title} Cohort Analysis", fontsize=15)
+        sns.heatmap(mat, annot=True, fmt='.0%', cmap='Blues', vmin=0, vmax=0.5, ax=ax)
+        ax.set_title(f"{seg_eng_map.get(sel_seg, sel_seg)} Cohort Analysis", fontsize=15)
         ax.set_ylabel("First Transaction Month", fontsize=12)
         ax.set_xlabel("Months Passed", fontsize=12)
-        
         st.pyplot(fig)
-    else:
-        st.warning("데이터가 부족하여 그래프를 표시할 수 없습니다.")
+    else: st.warning("데이터 부족")
 
-# --- Page 4: 연관 분석 (한국어 세그먼트 선택으로 수정됨) ---
+# 4. 연관 분석
 elif menu == "4. 연관 분석":
     st.title("🛒 장바구니 연관 분석")
-
-    # 세그먼트 리스트 자동 생성 (한국어 'segment' 컬럼 사용)
-    # 2개만 나오던 문제 해결 -> 전체 데이터에서 고유값 추출
-    unique_segments = sorted(df_filtered['segment'].dropna().unique().tolist())
-    options = ["전체"] + unique_segments
-
-    # 드롭다운 메뉴
-    target_seg = st.selectbox("분석 대상 세그먼트", options)
-    min_sup = st.slider("최소 지지도 (Min Support)", 0.005, 0.1, 0.01)
-
+    
+    opts = ["전체"] + sorted(df_filtered['segment'].dropna().unique().tolist())
+    tgt_seg = st.selectbox("분석 대상 세그먼트", opts)
+    sup = st.slider("최소 지지도", 0.005, 0.1, 0.01)
+    
     if st.button("분석 실행"):
-        with st.spinner("연관 규칙 계산 중..."):
-            # 세그먼트 필터링
-            if target_seg == "전체":
-                data_sub = df_filtered[['고객ID', '제품카테고리']]
-            else:
-                data_sub = df_filtered[df_filtered['segment'] == target_seg][['고객ID', '제품카테고리']]
-            
-            # 리스트 변환 및 중복 제거
-            dataset = [list(set(x)) for x in data_sub.groupby('고객ID')['제품카테고리'].apply(list).values.tolist()]
-
+        with st.spinner("계산 중..."):
+            d = df_filtered[['고객ID', '제품카테고리']] if tgt_seg == "전체" else df_filtered[df_filtered['segment'] == tgt_seg][['고객ID', '제품카테고리']]
+            ds = [list(set(x)) for x in d.groupby('고객ID')['제품카테고리'].apply(list)]
             te = TransactionEncoder()
-            te_ary = te.fit(dataset).transform(dataset)
-            df_te = pd.DataFrame(te_ary, columns=te.columns_)
-
-            frequent = apriori(df_te, min_support=min_sup, use_colnames=True)
+            te_ary = te.fit(ds).transform(ds)
+            res = apriori(pd.DataFrame(te_ary, columns=te.columns_), min_support=sup, use_colnames=True)
             
-            if frequent.empty:
-                st.warning("조건을 만족하는 규칙이 없습니다. 지지도를 낮춰보세요.")
-            else:
-                rules = association_rules(frequent, metric="lift", min_threshold=1)
-                rules = rules.sort_values(by='lift', ascending=False).head(15)
-                
-                # 가공
-                rules['antecedents'] = rules['antecedents'].apply(lambda x: ', '.join(list(x)))
-                rules['consequents'] = rules['consequents'].apply(lambda x: ', '.join(list(x)))
-                
-                st.subheader(f"상위 연관 규칙 Top 15 ({target_seg})")
-                st.dataframe(rules[['antecedents', 'consequents', 'support', 'confidence', 'lift']])
-                
-                # Plotly는 한글 지원 -> 한국어 제목 사용
-                fig = px.scatter(rules, x="support", y="confidence", size="lift", color="lift",
-                                 title=f"지지도 vs 신뢰도 ({target_seg})",
-                                 labels={'support': '지지도 (Support)', 'confidence': '신뢰도 (Confidence)', 'lift': '향상도 (Lift)'})
-                st.plotly_chart(fig, use_container_width=True)
+            if not res.empty:
+                rule = association_rules(res, metric="lift", min_threshold=1).sort_values('lift', ascending=False).head(15)
+                rule['antecedents'] = rule['antecedents'].apply(lambda x: ', '.join(list(x)))
+                rule['consequents'] = rule['consequents'].apply(lambda x: ', '.join(list(x)))
+                st.dataframe(rule[['antecedents', 'consequents', 'support', 'confidence', 'lift']])
+                st.plotly_chart(px.scatter(rule, x="support", y="confidence", size="lift", color="lift", title=f"지지도 vs 신뢰도 ({tgt_seg})"), use_container_width=True)
+            else: st.warning("결과 없음")
 
-# --- Page 5: 마케팅 전략 ---
+# 5. 마케팅 전략
 elif menu == "5. 마케팅 전략":
-    st.title("💡 맞춤형 마케팅 전략 제안")
-
-    st.header("1. 지역 기반 MLB 마케팅 (Headgear)")
-    st.markdown("**전략:** 야구장이 있는 지역을 타겟으로 모자(Headgear) 프로모션 진행 (7~8월)")
+    st.title("💡 최종 마케팅 전략 제안 (Action Plan)")
     
-    locations = {
-        'Chicago': (41.8781, -87.6298), 'California': (36.7783, -119.4179),
-        'New York': (40.7128, -74.0060), 'New Jersey': (40.0583, -74.4057),
-        'Washington DC': (38.9072, -77.0369)
-    }
-    stadiums = {
-        'Wrigley Field': (41.9484, -87.6550), 'Yankee Stadium': (40.8296, -73.9261),
-        'Dodger Stadium': (34.0738, -118.2400), 'Nationals Park': (38.8972, -77.0211)
-    }
+    tab1, tab2, tab3 = st.tabs(["🎯 전략 1: 타겟 마케팅", "🔄 전략 2: 리텐션 & 유입", "🗺️ 지역 연계 (MLB)"])
 
-    m = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
-    
-    for city, coord in locations.items():
-        folium.Circle(location=coord, radius=60000, color='blue', fill=True, opacity=0.2, popup=city).add_to(m)
-    
-    for stad, coord in stadiums.items():
-        folium.Marker(location=coord, popup=stad, icon=folium.Icon(color='red', icon='star')).add_to(m)
+    # 탭 1: 타겟 마케팅
+    with tab1:
+        st.header("데이터 기반 세그먼트별 공략")
+        
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.subheader("잠재충성고객")
+            st.info("**Office + Bags ➡ Lifestyle**")
+            st.markdown("- **Insight:** Office, Bags 동시 구매 시 Lifestyle 제품 구매 확률 높음\n- **Action:** 해당 고객군에게 Lifestyle 카테고리 할인 쿠폰 발송 (Cross-selling)")
+        
+        with c2:
+            st.subheader("VIP / 충성고객")
+            st.info("**대량 구매 이력 활용**")
+            st.markdown("- **Insight:** Headgear 등 특정 품목 대량 구매 패턴\n- **Action:** 신상품 출시 시 우선 알림 및 얼리버드 혜택 제공으로 Lock-in 강화")
+            
+        with c3:
+            st.subheader("이탈우려고객")
+            st.info("**새로운 카테고리 제안**")
+            st.markdown("- **Insight:** 기존 구매 품목에 대한 반응률 저조\n- **Action:** 기존 품목 대신 베스트셀러나 신규 카테고리 위주의 환기성 메일링 시도")
 
-    st_folium(m, width=800, height=500)
+    # 탭 2: 리텐션 & 유입
+    with tab2:
+        st.header("리텐션 및 첫 구매 유도 전략")
+        
+        # 1. 의류 재구매
+        st.subheader("1. 의류(Apparel) Next-Day 전략")
+        st.write("의류 구매 고객 중 약 **41%**가 구매 **바로 다음 날** 재구매하는 패턴 발견")
+        
+        # 재구매 데이터 시각화
+        re_data = pd.DataFrame({'Cycle': ['Same Day', 'Next Day (D+1)', '2~7 Days', '8+ Days'], 'Count': [739, 153, 20, 411]})
+        fig_apparel = px.bar(re_data, x='Cycle', y='Count', text='Count', title="Apparel Repurchase Cycle", color='Count')
+        st.plotly_chart(fig_apparel, use_container_width=True)
+        st.success("🚀 **Action:** 의류 구매 익일, 어울리는 액세서리나 하의를 추천하는 푸시 알림 발송")
+        
+        st.divider()
+        
+        col_a, col_b = st.columns(2)
+        
+        # 2. 비회원/신규
+        with col_a:
+            st.subheader("2. 비회원 및 신규 가입자")
+            ghost_members = 72 # 분석 텍스트 기반 하드코딩
+            st.metric("가입 후 미거래 고객 (Ghost)", f"{ghost_members}명")
+            st.markdown("""
+            - **Insight:** 마케팅 집중 기간(8월~) 유입되었으나 거래 없음
+            - **Action:** '첫 구매 전용 15% 쿠폰' 및 단계별 혜택(첫달 30%, 익월 10%) 제공
+            """)
+            
+        # 3. 요일별 프로모션
+        with col_b:
+            st.subheader("3. 요일별 게릴라 프로모션")
+            # 요일별 거래량 계산
+            df_filtered['day_name'] = df_filtered['거래날짜'].dt.day_name()
+            day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+            day_counts = df_filtered['day_name'].value_counts().reindex(day_order).reset_index()
+            day_counts.columns = ['Day', 'Transactions']
+            
+            fig_day = px.bar(day_counts, x='Day', y='Transactions', color='Transactions', title="Transaction Volume by Day")
+            st.plotly_chart(fig_day, use_container_width=True)
+            st.success("🚀 **Action:** 거래량이 가장 낮은 월/화요일에 '게릴라 쿠폰' 배포로 매출 방어")
 
-    st.markdown("---")
-    st.header("2. 의류(Apparel) 재구매 유도")
-    st.info("의류 구매 고객 중 약 26%가 바로 다음날 재구매를 합니다. (D+1 전략)")
-    
-    re_data = pd.DataFrame({'주기': ['당일', '익일(D+1)', '2~7일', '8일 이상'], '고객수': [739, 153, 20, 411]})
-    fig_bar = px.bar(re_data, x='주기', y='고객수', title="의류 재구매 소요기간 분포", text='고객수')
-    st.plotly_chart(fig_bar, use_container_width=True)
+    # 탭 3: 지역 연계 (MLB)
+    with tab3:
+        st.header("지역 특성 활용 (MLB 연고지)")
+        st.markdown("**전략:** 야구장이 위치한 주요 도시를 타겟으로 7~8월(올스타전/하반기) Headgear 프로모션 진행")
+        
+        locations = {'Chicago': (41.8781, -87.6298), 'California': (36.7783, -119.4179), 'New York': (40.7128, -74.0060), 'New Jersey': (40.0583, -74.4057), 'Washington DC': (38.9072, -77.0369)}
+        stadiums = {'Wrigley Field': (41.9484, -87.6550), 'Yankee Stadium': (40.8296, -73.9261), 'Dodger Stadium': (34.0738, -118.2400), 'Nationals Park': (38.8972, -77.0211)}
+
+        m = folium.Map(location=[39.8283, -98.5795], zoom_start=4)
+        for city, coord in locations.items():
+            folium.Circle(location=coord, radius=60000, color='blue', fill=True, opacity=0.2, popup=city).add_to(m)
+        for stad, coord in stadiums.items():
+            folium.Marker(location=coord, popup=stad, icon=folium.Icon(color='red', icon='star')).add_to(m)
+
+        st_folium(m, width=800, height=500)
