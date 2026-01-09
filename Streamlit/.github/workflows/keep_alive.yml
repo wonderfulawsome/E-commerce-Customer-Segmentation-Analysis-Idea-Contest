@@ -1,0 +1,18 @@
+name: Keep Streamlit Alive
+
+on:
+  # 1시간마다 자동 실행 (매 시 정각)
+  schedule:
+    - cron: "0 * * * *"
+  
+  # 수동 실행 버튼 활성화
+  workflow_dispatch:
+
+jobs:
+  ping_app:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Streamlit App Status
+        # 1시간마다 접속 시도 (타임아웃 30초 설정)
+        run: |
+          curl -I --max-time 30 https://8ug2zd7qzwdj5u24nom335.streamlit.app/
