@@ -1,18 +1,15 @@
 name: Keep Streamlit Alive
 
 on:
-  # 1시간마다 자동 실행 (매 시 정각)
   schedule:
-    - cron: "0 * * * *"
-  
-  # 수동 실행 버튼 활성화
+    - cron: "*/15 * * * *" # 15분마다 실행 (슬립 방지 골든타임)
   workflow_dispatch:
 
 jobs:
   ping_app:
     runs-on: ubuntu-latest
     steps:
-      - name: Check Streamlit App Status
-        # 1시간마다 접속 시도 (타임아웃 30초 설정)
+      - name: Wake up Streamlit App
         run: |
-          curl -I --max-time 30 https://8ug2zd7qzwdj5u24nom335.streamlit.app/
+          # -L: 리다이렉트 추적, -A: 크롬 브라우저 위장
+          curl -L --max-time 30 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36" https://8ug2zd7qzwdj5u24nom335.streamlit.app/
