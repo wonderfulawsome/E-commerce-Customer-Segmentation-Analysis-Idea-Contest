@@ -1,0 +1,16 @@
+name: Keep Render App Alive
+
+on:
+  schedule:
+    # 14분마다 실행 (Render 무료 서버가 15분마다 잠들기 때문)
+    - cron: '*/14 * * * *'
+  workflow_dispatch: # 수동으로 버튼 눌러서 실행 가능하게 함
+
+jobs:
+  ping_site:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Render Website
+        # 타임아웃 5분(300초) 설정 + 5번 재시도
+        # Render가 깨어날 때까지 끈질기게 기다립니다.
+        run: curl --max-time 300 --retry 5 --retry-delay 10 --retry-max-time 300 https://본인앱주소.onrender.com/
